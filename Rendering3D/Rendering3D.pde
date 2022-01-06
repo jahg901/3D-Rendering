@@ -47,31 +47,6 @@ void findAllOverlaps(Shape[] shapes, LinkedList<Shape> totalOverlaps, LinkedList
    }
 }
 
-int closestFace0(Shape overlap, LinkedList<Integer> indices, Face[] faces) {
-  float minDist = 1e12;
-  int closeFace = 0;
-  float[] comparePoint = overlap.centre();
-  
-  for (int index : indices) {
-    int[] vMatches = faces[index].parentSolid.vertexMatches.get(faces[index].faceIndex);
-    
-    PVector[] refVertices = new PVector[3];
-    float[][] projVertices = new float[3][2];
-    for (int i = 0; i < 3; i++) {
-      refVertices[i] = faces[index].parentSolid.vertices[vMatches[i]];
-      projVertices[i] = projectedPixel(refVertices[i]);
-    }
-    
-    float coeff1 = (projVertices[0][0] * (projVertices[2][1] - comparePoint[1])) + (projVertices[2][0] * (comparePoint[1] - projVertices[0][1])) + comparePoint[0] * (projVertices[0][1] - projVertices[2][1]);
-    float coeff2 = (projVertices[0][0] * (comparePoint[1] - projVertices[1][1])) + (projVertices[1][0] * (projVertices[0][1] - comparePoint[1])) + comparePoint[0] * (projVertices[1][1] - projVertices[0][1]);
-    float divisor = (projVertices[0][0] * (projVertices[2][1] - projVertices[1][1])) + (projVertices[1][0] * (projVertices[0][1] - projVertices[2][1])) + (projVertices[2][0] * (projVertices[1][1] - projVertices[0][1]));
-    
-    PVector point3D = PVector.add(PVector.add(PVector.mult(refVertices[0], 1 - (coeff1 + coeff2)/divisor), PVector.mult(refVertices[1], coeff1/divisor)), PVector.mult(refVertices[2], coeff2/divisor));
-  }
-  
-  return closeFace;
-}
-
 int closestFace(Shape overlap, LinkedList<Integer> indices, Face[] faces) {
   float minDist = 1e12;
   int closeFace = 0;
@@ -185,18 +160,8 @@ void setScope() {
   viewUDVec.setMag(viewHeight);
 }
 
-/*float[] projectedPixel0(PVector vertex) {
-
-  PVector v = PVector.sub(vertex, location);
-  float vF = PVector.dot(v, viewVecUnit);
-  float vLR = PVector.dot(v, viewLRVec) / viewWidth;
-  float vUD = PVector.dot(v, viewUDVec) / viewHeight;
-
-  return new float[] { (vLR / (vF * viewWidth) + 1) * width/2.0, (vUD / (vF * viewHeight) + 1) * height/2.0 };
-} */
-
-float[] projectedPixel(PVector vertex) {
-  PVector v = PVector.sub(vertex, location);
+float[] projectedPixel(PVector vertex, PVector lastVertex) { //Make a projectedShape function based on this; we need it now
+  PVector v = PVector.sub(vertex, location); 
   PVector vUD = viewUDVec.normalize(null);
   PVector vLR = viewLRVec.normalize(null).mult(-1);
   
@@ -205,21 +170,49 @@ float[] projectedPixel(PVector vertex) {
   angleLR = PVector.dot(v, vLR) > 0 ? abs(angleLR) : -abs(angleLR);
   angleUD = PVector.dot(v, vUD) > 0 ? abs(angleUD) : -abs(angleUD);
   
+  float maxLR = radians(ANGLE_WIDTH / 2);
+  float maxUD = radians(ANGLE_HEIGHT / 2);
+  final float MARGIN = 0.01;
+  
+  if (angleLR > maxLR && angleUD > maxUD) {
+    angleLR = maxLR + MARGIN;
+    angleUD = maxUD + MARGIN;
+  } else if (angleLR < -maxLR && angleUD > maxUD) {
+    angleLR = -maxLR - MARGIN;
+    angleUD = maxUD + MARGIN;
+  } else if (angleLR < -maxLR && angleUD < -maxUD) {
+    angleLR = -maxLR - MARGIN;
+    angleUD = -maxUD - MARGIN;
+  } else if (angleLR > maxLR && angleUD < -maxUD) {
+    angleLR = maxLR + MARGIN;
+    angleUD = -maxUD - MARGIN;
+  } else if (angleLR > maxLR) {
+    angleLR = maxLR + MARGIN;
+    PVector normal = vUD.cross(rotateVector(viewVecUnit, vUD, -angleLR));
+    PVector currentEdge = PVector.sub(vertex, lastVertex);
+    
+    float parameter = PVector.dot(normal, PVector.mult(v, -1)) / PVector.dot(normal, currentEdge);
+    PVector replaceVertex = PVector.add(vertex, PVector.mult(currentEdge, parameter));
+    
+    v = PVector.sub(replaceVertex, location);
+    println(vertex + ", " + lastVertex + " -> " + replaceVertex);
+    println(degrees(PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vUD, PVector.dot(v, vUD))))));
+    println(degrees(PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vLR, PVector.dot(v, vLR))))));
+  }
+  
   return new float[] { (angleLR / radians(ANGLE_WIDTH) + 0.5) * width, (angleUD / radians(ANGLE_HEIGHT) + 0.5) * height };
 }
 
 PVector viewDirection(float[] pixel) {
-  PVector vLR = viewLRVec.normalize(null).mult(-1);
+  PVector vLR = viewLRVec.normalize(null);
   PVector vUD = viewUDVec.normalize(null);
   
   float angleLR = radians(ANGLE_WIDTH)*(pixel[0]/width - 0.5);
   float angleUD = radians(ANGLE_HEIGHT)*(pixel[1]/height - 0.5);
   
-  println();
-  println(degrees(angleLR));
-  println(degrees(angleUD));
-  
-  return rotateVector(rotateVector(viewVecUnit, vUD, angleLR), vLR, -angleUD).normalize(); //issue here
+  PVector p = vUD.cross(rotateVector(viewVecUnit, vUD, angleLR)).cross(vLR.cross(rotateVector(viewVecUnit, vLR, angleUD))).normalize();
+  p.x = -p.x;
+  return p;
 }
 
 void vision() {
@@ -240,8 +233,8 @@ void vision() {
     PVector[] vertices = sol[j].vertices;
     float[][] vertexPixels = new float[8][2];
 
-    for (int i = 0; i < sol[j].numVertices; i++) {     
-      vertexPixels[i] = projectedPixel(vertices[i]);
+    for (int i = 0; i < sol[j].numVertices; i++) {
+      vertexPixels[i] = projectedPixel(vertices[i], vertices[(int)add(i, -1, sol[j].numVertices)]);
     }
 
     for (int i = 0; i < sol[j].numFaces; i++) {
@@ -265,7 +258,7 @@ void vision() {
 }
 
 void solveOverlaps(Face[] faces, int abc) { //Shit
-  LinkedList<Shape> overlaps = new LinkedList<Shape>();
+  /*LinkedList<Shape> overlaps = new LinkedList<Shape>();
   LinkedList<int[]> indices = new LinkedList<int[]>();
 
   LinkedList<Face> overlapFaces = new LinkedList<Face>();
@@ -311,7 +304,7 @@ void solveOverlaps(Face[] faces, int abc) { //Shit
     }
 
     solveOverlaps(overlapFaces.toArray(new Face[overlapFaces.size()]), abc + 1);
-  }
+  } */
 }
 
 void move() {
@@ -332,7 +325,7 @@ void move() {
 void setup() {
   frameRate(60);
   size(200, 200);
-  location = new PVector(-400, 0, 0);
+  location = new PVector(-200, 0, 0);
   angleFlat = 0;
   angleIncline = 0;
   angleRotate = 0;
@@ -418,13 +411,13 @@ void keyReleased() {
     moveUD = 0;
     break;
   case ' ':
-    println();
+    /*println();
     for (Face F : f) {
       for (int i = 0; i < F.numVertices(); i++) {
         print(Arrays.toString(F.getVert(i)) + " ");
       }
       println();
-    }
+    }*/
     break;
   }
 }
