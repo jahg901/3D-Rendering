@@ -168,24 +168,6 @@ float[] projectedPixel(PVector vertex, PVector lastVertex) { //Make a projectedS
   float angleLR = PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vUD, PVector.dot(v, vUD)))) * (PVector.dot(v, vLR) > 0 ? 1 : -1);
   float angleUD = PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vLR, PVector.dot(v, vLR)))) * (PVector.dot(v, vUD) > 0 ? 1 : -1);
   
-  float maxLR = radians(ANGLE_WIDTH / 2);
-  float maxUD = radians(ANGLE_HEIGHT / 2);
-  final float MARGIN = 0.01;
-  
-  /*if (angleLR > maxLR) {
-    angleLR = maxLR + MARGIN;
-    PVector normal = vUD.cross(rotateVector(viewVecUnit, vUD, -angleLR));
-    PVector currentEdge = PVector.sub(vertex, lastVertex);
-    
-    float parameter = PVector.dot(normal, PVector.mult(v, -1)) / PVector.dot(normal, currentEdge);
-    PVector replaceVertex = PVector.add(vertex, PVector.mult(currentEdge, parameter));
-    
-    v = PVector.sub(replaceVertex, location);
-    //println(vertex + ", " + lastVertex + " -> " + replaceVertex);
-    //angleLR = PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vUD, PVector.dot(v, vUD)))) * (PVector.dot(v, vLR) > 0 ? 1 : -1);
-    //angleUD = PVector.angleBetween(viewVecUnit, PVector.sub(v, PVector.mult(vLR, PVector.dot(v, vLR)))) * (PVector.dot(v, vUD) > 0 ? 1 : -1);
-  }*/
-  
   return new float[] { (angleLR / radians(ANGLE_WIDTH) + 0.5) * width, (angleUD / radians(ANGLE_HEIGHT) + 0.5) * height };
 }
 
@@ -200,7 +182,18 @@ float[] projAngle(PVector vertex) {
   return new float[] { angleLR, angleUD };
 }
 
-Shape projection(PVector[] vertices3D) { //add checking if intersection occurs on the line SEGMENT, not just the line (also, some issues with NaN and other baddies getting into the angles)
+PVector segmentPlanePOI(PVector planeNormal, PVector startPoint, PVector direction, float maxAngle, int angleIndex) {
+  float intersect = PVector.dot(planeNormal, PVector.sub(location, startPoint)) / PVector.dot(planeNormal, direction);
+  if (!(intersect > 1e-5 && intersect < 1 - 1e-5)) return null;
+  println(intersect);
+  
+  PVector POI = PVector.add(startPoint, PVector.mult(direction, intersect));
+  if (abs(projAngle(POI)[angleIndex]) > maxAngle) return null;
+  
+  return POI;
+}
+
+Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices to corners of the range when needed
   LinkedList<PVector> verts = new LinkedList<PVector>();
   PVector vUD = viewUDVec.normalize(null);
   PVector vLR = viewLRVec.normalize(null).mult(-1);
@@ -213,6 +206,8 @@ Shape projection(PVector[] vertices3D) { //add checking if intersection occurs o
   PVector topPlaneNormal = vLR.cross(rotateVector(viewVecUnit, vLR, maxUD));
   PVector bottomPlaneNormal = vLR.cross(rotateVector(viewVecUnit, vLR, -maxUD));
   
+  PVector exitPlaneNormal = null;
+  
   for (PVector vertex : vertices3D) verts.add(vertex);
   
   for (int i = 0; i < verts.size(); i++) {
@@ -221,92 +216,57 @@ Shape projection(PVector[] vertices3D) { //add checking if intersection occurs o
     int boundLR = angle[0] < -maxLR ? -1 : (angle[0] > maxLR ? 1 : 0);
     int boundUD = angle[1] < -maxUD ? -1 : (angle[1] > maxUD ? 1 : 0);
     
-    if (boundLR != 0 || boundUD != 0) {
-      PVector prevVec = PVector.sub(verts.get((int)add(i, -1, vertices3D.length)), verts.get(i));
-      PVector nextVec = PVector.sub(verts.get((int)add(i, 1, vertices3D.length)), verts.get(i));
-      float prevIntersect = 0, nextIntersect = 0;
-      PVector prevPOI = new PVector(), nextPOI = new PVector();
-      if (boundUD == 0) {
-        if (boundLR == -1) {
-          prevIntersect = PVector.dot(leftPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, prevVec);
-          prevPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevIntersect)) : null;
-          if (prevPOI != null && abs(projAngle(prevPOI)[1]) > maxUD) prevPOI = null;
-          
-          nextIntersect = PVector.dot(leftPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, nextVec);
-          nextPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextIntersect)) : null;
-          if (nextPOI != null && abs(projAngle(nextPOI)[1]) > maxUD) nextPOI = null;
+    if (boundLR == 0 && boundUD == 0) {
+      exitPlaneNormal = null;
+    } else {
+      PVector prevVec = PVector.sub(verts.get((int)add(i, -1, verts.size())), verts.get(i));
+      PVector nextVec = PVector.sub(verts.get((int)add(i, 1, verts.size())), verts.get(i));
+      PVector prevPOI, nextPOI;
+      
+      if (boundUD == 0 || boundLR == 0) {
+        PVector planeNormal;
+        int angleIndex;
+        if (boundLR == -1) {          
+          planeNormal = leftPlaneNormal;
+          angleIndex = 1;
+        } else if (boundLR == 1) {
+          planeNormal = rightPlaneNormal;
+          angleIndex = 1;
+        } else if (boundUD == -1) {
+          planeNormal = bottomPlaneNormal;
+          angleIndex = 0;
         } else {
-          prevIntersect = PVector.dot(rightPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, prevVec);
-          prevPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevIntersect)) : null;
-          if (prevPOI != null && abs(projAngle(prevPOI)[1]) > maxUD) prevPOI = null;
-          
-          nextIntersect = PVector.dot(rightPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, nextVec);          
-          nextPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextIntersect)) : null;
-          if (nextPOI != null && abs(projAngle(nextPOI)[1]) > maxUD) nextPOI = null;
-        }
-        
-      } else if (boundLR == 0) {
-        if (boundUD == -1) {
-          prevIntersect = PVector.dot(bottomPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(bottomPlaneNormal, prevVec);
-          prevPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevIntersect)) : null;
-          if (prevPOI != null && abs(projAngle(prevPOI)[0]) > maxLR) prevPOI = null;
-          
-          nextIntersect = PVector.dot(bottomPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(bottomPlaneNormal, nextVec);        
-          nextPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextIntersect)) : null;
-          if (nextPOI != null && abs(projAngle(nextPOI)[0]) > maxLR) nextPOI = null;
-        } else {
-          prevIntersect = PVector.dot(topPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(topPlaneNormal, prevVec);
-          prevPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevIntersect)) : null;
-          if (prevPOI != null && abs(projAngle(prevPOI)[0]) > maxLR) prevPOI = null;
-          
-          nextIntersect = PVector.dot(topPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(topPlaneNormal, nextVec);        
-          nextPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextIntersect)) : null;
-          if (nextPOI != null && abs(projAngle(nextPOI)[0]) > maxLR) nextPOI = null;
-        }
+          planeNormal = topPlaneNormal;
+          angleIndex = 0;
+        }     
+        prevPOI = segmentPlanePOI(planeNormal, verts.get(i), prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
+        nextPOI = segmentPlanePOI(planeNormal, verts.get(i), nextVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
         
       } else {
-        float prevHorIntersect = 0, prevVertIntersect = 0, nextHorIntersect = 0, nextVertIntersect = 0;
         PVector prevHorPOI, prevVertPOI, nextHorPOI, nextVertPOI;
-        if (boundLR == -1) {
-          prevHorIntersect = PVector.dot(leftPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, prevVec);
-          prevHorPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevHorIntersect)) : null;
-          if (prevHorPOI != null && abs(projAngle(prevHorPOI)[1]) > maxUD) prevHorPOI = null;
-          
-          nextHorIntersect = PVector.dot(leftPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(leftPlaneNormal, nextVec);
-          nextHorPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextHorIntersect)) : null;
-          if (nextHorPOI != null && abs(projAngle(nextHorPOI)[1]) > maxUD) nextHorPOI = null;
-        } else {
-          prevHorIntersect = PVector.dot(rightPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(rightPlaneNormal, prevVec);
-          prevHorPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevHorIntersect)) : null;
-          if (prevHorPOI != null && abs(projAngle(prevHorPOI)[1]) > maxUD) prevHorPOI = null;
-          
-          nextHorIntersect = PVector.dot(rightPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(rightPlaneNormal, nextVec);
-          nextHorPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextHorIntersect)) : null;
-          if (nextHorPOI != null && abs(projAngle(nextHorPOI)[1]) > maxUD) nextHorPOI = null;
-        }
+        PVector horPlaneNormal, vertPlaneNormal;
         
-        if (boundUD == -1) {
-          prevVertIntersect = PVector.dot(bottomPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(bottomPlaneNormal, prevVec);
-          prevVertPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevVertIntersect)) : null;
-          if (prevVertPOI != null && abs(projAngle(prevVertPOI)[0]) > maxLR) prevVertPOI = null;
-          
-          nextVertIntersect = PVector.dot(bottomPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(bottomPlaneNormal, nextVec);
-          nextVertPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextVertIntersect)) : null;
-          if (nextVertPOI != null && abs(projAngle(nextVertPOI)[0]) > maxLR) nextVertPOI = null;
-        } else {
-          prevVertIntersect = PVector.dot(topPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(topPlaneNormal, prevVec);
-          prevVertPOI = prevIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(prevVec, prevVertIntersect)) : null;
-          if (prevVertPOI != null && abs(projAngle(prevVertPOI)[0]) > maxLR) prevVertPOI = null;
-          
-          nextVertIntersect = PVector.dot(topPlaneNormal, PVector.sub(location, verts.get(i))) / PVector.dot(topPlaneNormal, nextVec);
-          nextVertPOI = nextIntersect * 0 == 0 ? PVector.add(verts.get(i), PVector.mult(nextVec, nextVertIntersect)) : null;
-          if (nextVertPOI != null && abs(projAngle(nextVertPOI)[0]) > maxLR) nextVertPOI = null;
-        }
+        horPlaneNormal = boundLR == -1 ? leftPlaneNormal : rightPlaneNormal;
+        vertPlaneNormal = boundUD == -1 ? bottomPlaneNormal : topPlaneNormal;
         
-        if (prevHorPOI == null) prevPOI = prevVertPOI;
-        if (nextHorPOI == null) nextPOI = nextVertPOI;
+        prevHorPOI = segmentPlanePOI(horPlaneNormal, verts.get(i), prevVec, maxUD, 1);
+        nextHorPOI = segmentPlanePOI(horPlaneNormal, verts.get(i), nextVec, maxUD, 1);
+        prevVertPOI = segmentPlanePOI(vertPlaneNormal, verts.get(i), prevVec, maxLR, 0);
+        nextVertPOI = segmentPlanePOI(vertPlaneNormal, verts.get(i), nextVec, maxLR, 0);
+        
+        prevPOI = prevHorPOI == null ? prevVertPOI : prevHorPOI;
+        nextPOI = nextHorPOI == null ? nextVertPOI : nextHorPOI;
       }
       
+      float[][] ang = {projAngle(verts.get(i)), prevPOI == null ? null : projAngle(prevPOI), nextPOI == null ? null : projAngle(nextPOI)};
+      for (float[] f : ang) {
+        if (f != null) {
+          f[0] = round(degrees(f[0]) * 10000) / 10000.0;
+          f[1] = round(degrees(f[1]) * 10000) / 10000.0;
+        }
+      }
+      println(Arrays.toString(ang[0]) + " -> " + (ang[1] == null ? null : Arrays.toString(ang[1])) + ", " + (ang[2] == null ? null : Arrays.toString(ang[2])));
+           
       verts.remove(i);
       i--;
       if (prevPOI != null) {
@@ -323,10 +283,19 @@ Shape projection(PVector[] vertices3D) { //add checking if intersection occurs o
   float[][] angles = new float[verts.size()][2];
   for (int i = 0; i < angles.length; i++) {
     angles[i] = projAngle(verts.get(i));
-    angles[i][0] = degrees(angles[i][0]);
-    angles[i][1] = degrees(angles[i][1]);
+    angles[i][0] = round(degrees(angles[i][0]) * 100) / 100.0;
+    angles[i][1] = round(degrees(angles[i][1]) * 100) / 100.0;
   }
-  for (float[] a : angles) print(Arrays.toString(a) + " ");
+  float[][] oldAngles = new float[vertices3D.length][2];
+  for (int i = 0; i < oldAngles.length; i++) {
+    oldAngles[i] = projAngle(vertices3D[i]);
+    oldAngles[i][0] = round(degrees(oldAngles[i][0]) * 100) / 100.0;
+    oldAngles[i][1] = round(degrees(oldAngles[i][1]) * 100) / 100.0;
+  }
+  print("Before: "); for (float[] a : oldAngles) print(Arrays.toString(a) + " ");
+  println();
+  print("After: "); for (float[] a : angles) print(Arrays.toString(a) + " ");
+  println();
   println();
   
   return null;
