@@ -72,6 +72,14 @@ float add(float a, float b, float boundary) {
   return a;
 }
 
+int add(int a, int b, int boundary) {
+  a = (a + b) % boundary;
+  if (a < 0) {
+    a += boundary;
+  }
+  return a;
+}
+
 void setAngleRot() {
   if (angleIncline > 90 && angleIncline <= 270) {
     angleRot = -angleRotate;
@@ -121,22 +129,11 @@ void setScope() {
     B = -1;
     if (angleFlat == 90) {
       A = 1;
-      if (angleIncline == 0) {
-        C = -1;
-        D = -1;
-      } else {
-        C = 1;
-        D = 1;
-      }
+      C = D = (angleIncline == 0 ? -1 : 1);
     } else {
       A = -1;
-      if (angleIncline == 0) {
-        C = 1;
-        D = -1;
-      } else {
-        C = -1;
-        D = 1;
-      }
+      C = angleIncline == 0 ? 1 : -1;
+      D = -C;
     }
 
     viewLRVec.set(A * cos(radians(angleRot)), 0, B * sin(radians(angleRot)));
@@ -185,15 +182,28 @@ float[] projAngle(PVector vertex) {
 PVector segmentPlanePOI(PVector planeNormal, PVector startPoint, PVector direction, float maxAngle, int angleIndex) {
   float intersect = PVector.dot(planeNormal, PVector.sub(location, startPoint)) / PVector.dot(planeNormal, direction);
   if (!(intersect > 1e-5 && intersect < 1 - 1e-5)) return null;
-  println(intersect);
   
   PVector POI = PVector.add(startPoint, PVector.mult(direction, intersect));
-  if (abs(projAngle(POI)[angleIndex]) > maxAngle) return null;
+  if (maxAngle != 0 && abs(projAngle(POI)[angleIndex]) > maxAngle) return null;
   
   return POI;
 }
 
 Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices to corners of the range when needed
+  PVector[] allCorners = { viewDirection(width+width/ANGLE_WIDTH, -height/ANGLE_HEIGHT).mult(100), viewDirection(width+width/ANGLE_WIDTH, height+height/ANGLE_HEIGHT).mult(100), viewDirection(-width/ANGLE_WIDTH, height+height/ANGLE_HEIGHT).mult(100), viewDirection(-width/ANGLE_WIDTH, -height/ANGLE_HEIGHT).mult(100) }; //figure out where the corners are; corners[i] stores corner between plane i and plane i+1
+
+  float[][] cornerAngles = new float[4][2];
+  print("Corners: ");
+  for (int i = 0; i < 4; i++) {
+    cornerAngles[i] = projAngle(PVector.add(location, allCorners[i]));
+    cornerAngles[i][0] = degrees(cornerAngles[i][0]);
+    cornerAngles[i][1] = degrees(cornerAngles[i][1]);
+    print(Arrays.toString(cornerAngles[i]) + " ");
+  }
+  println();
+  
+  LinkedList<PVector> addCorners = new LinkedList<PVector>();
+  
   LinkedList<PVector> verts = new LinkedList<PVector>();
   PVector vUD = viewUDVec.normalize(null);
   PVector vLR = viewLRVec.normalize(null).mult(-1);
@@ -201,61 +211,177 @@ Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices t
   float maxLR = radians(ANGLE_WIDTH / 2 + 1);
   float maxUD = radians(ANGLE_HEIGHT / 2 + 1);
   
-  PVector leftPlaneNormal = vUD.cross(rotateVector(viewVecUnit, vUD, maxLR));
-  PVector rightPlaneNormal = vUD.cross(rotateVector(viewVecUnit, vUD, -maxLR));
-  PVector topPlaneNormal = vLR.cross(rotateVector(viewVecUnit, vLR, maxUD));
-  PVector bottomPlaneNormal = vLR.cross(rotateVector(viewVecUnit, vLR, -maxUD));
+  // { top, right, bottom, left }
+  PVector[] boundPlaneNormals = { vLR.cross(rotateVector(viewVecUnit, vLR, maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, -maxLR)), vLR.cross(rotateVector(viewVecUnit, vLR, -maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, maxLR)) };
   
-  PVector exitPlaneNormal = null;
+  int exitPlane = 0; //0 is top, 1 is right, 2 is bottom, 3 is left, n is n % 4
+  int planeChange = 0;
+  boolean nextNull = false;
   
   for (PVector vertex : vertices3D) verts.add(vertex);
   
-  for (int i = 0; i < verts.size(); i++) {
-    float[] angle = projAngle(verts.get(i));
+  int k = -1;
+  float[] angle;
+  do {
+    k++;
+    angle = projAngle(verts.get(k));
+  } while (abs(angle[0]) <= maxLR && abs(angle[1]) <= maxUD && k < verts.size());
+  if (k == verts.size()) {
+    k = 0;
+    boolean intersectionFound = false;
+    do {
+      PVector prevVec =  PVector.sub(verts.get(add(k, -1, verts.size())), verts.get(k));
+      for (int i = 0; i < 4; i++) {
+        int angleIndex = i % 2;
+        if (segmentPlanePOI(boundPlaneNormals[i], verts.get(k), prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex) != null) intersectionFound = true;
+      }
+      k++;
+    } while (!intersectionFound && k < verts.size());
+    if (k == verts.size()) return null; 
+    k--;
+  }
+  
+  for (int index = 0; index < verts.size(); index++) { //issue with catching corners at the end of loop
+    int i = add(index, k, verts.size());
+    angle = projAngle(verts.get(i));
   
     int boundLR = angle[0] < -maxLR ? -1 : (angle[0] > maxLR ? 1 : 0);
     int boundUD = angle[1] < -maxUD ? -1 : (angle[1] > maxUD ? 1 : 0);
     
     if (boundLR == 0 && boundUD == 0) {
-      exitPlaneNormal = null;
+      planeChange = 0;
     } else {
-      PVector prevVec = PVector.sub(verts.get((int)add(i, -1, verts.size())), verts.get(i));
-      PVector nextVec = PVector.sub(verts.get((int)add(i, 1, verts.size())), verts.get(i));
+      PVector prevVec = PVector.sub(verts.get(add(i, -1, verts.size())), verts.get(i)),
+              nextVec = PVector.sub(verts.get(add(i, 1, verts.size())), verts.get(i));
       PVector prevPOI, nextPOI;
+      int prevPlane, nextPlane = 0;
       
       if (boundUD == 0 || boundLR == 0) {
-        PVector planeNormal;
-        int angleIndex;
         if (boundLR == -1) {          
-          planeNormal = leftPlaneNormal;
-          angleIndex = 1;
+          prevPlane = nextPlane = 3;
         } else if (boundLR == 1) {
-          planeNormal = rightPlaneNormal;
-          angleIndex = 1;
+          prevPlane = nextPlane = 1;
         } else if (boundUD == -1) {
-          planeNormal = bottomPlaneNormal;
-          angleIndex = 0;
+          prevPlane = nextPlane = 2;
         } else {
-          planeNormal = topPlaneNormal;
-          angleIndex = 0;
-        }     
-        prevPOI = segmentPlanePOI(planeNormal, verts.get(i), prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
-        nextPOI = segmentPlanePOI(planeNormal, verts.get(i), nextVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
+          prevPlane = nextPlane = 0;
+        }
+        int angleIndex = prevPlane % 2;
+        prevPOI = segmentPlanePOI(boundPlaneNormals[prevPlane], verts.get(i), prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
+        nextPOI = segmentPlanePOI(boundPlaneNormals[nextPlane], verts.get(i), nextVec, angleIndex == 0 ? maxLR : maxUD, angleIndex);
         
       } else {
         PVector prevHorPOI, prevVertPOI, nextHorPOI, nextVertPOI;
-        PVector horPlaneNormal, vertPlaneNormal;
+        int horPlane, vertPlane;
         
-        horPlaneNormal = boundLR == -1 ? leftPlaneNormal : rightPlaneNormal;
-        vertPlaneNormal = boundUD == -1 ? bottomPlaneNormal : topPlaneNormal;
+        horPlane = boundLR == -1 ? 3 : 1;
+        vertPlane = boundUD == -1 ? 2 : 0;
         
-        prevHorPOI = segmentPlanePOI(horPlaneNormal, verts.get(i), prevVec, maxUD, 1);
-        nextHorPOI = segmentPlanePOI(horPlaneNormal, verts.get(i), nextVec, maxUD, 1);
-        prevVertPOI = segmentPlanePOI(vertPlaneNormal, verts.get(i), prevVec, maxLR, 0);
-        nextVertPOI = segmentPlanePOI(vertPlaneNormal, verts.get(i), nextVec, maxLR, 0);
+        prevHorPOI = segmentPlanePOI(boundPlaneNormals[horPlane], verts.get(i), prevVec, maxUD, 1);
+        nextHorPOI = segmentPlanePOI(boundPlaneNormals[horPlane], verts.get(i), nextVec, maxUD, 1);
+        prevVertPOI = segmentPlanePOI(boundPlaneNormals[vertPlane], verts.get(i), prevVec, maxLR, 0);
+        nextVertPOI = segmentPlanePOI(boundPlaneNormals[vertPlane], verts.get(i), nextVec, maxLR, 0);
         
-        prevPOI = prevHorPOI == null ? prevVertPOI : prevHorPOI;
-        nextPOI = nextHorPOI == null ? nextVertPOI : nextHorPOI;
+        if (prevHorPOI == null) {
+          prevPOI = prevVertPOI;
+          prevPlane = vertPlane;
+        } else {
+          prevPOI = prevHorPOI;
+          prevPlane = horPlane;
+        }
+        
+        if (nextHorPOI == null) {
+          nextPOI = nextVertPOI;
+          nextPlane = vertPlane;
+        } else {
+          nextPOI = nextHorPOI;
+          nextPlane = horPlane;
+        }
+      }
+      
+      if (nextNull) prevPOI = null;
+      
+      if (prevPOI != null) {
+        exitPlane = prevPlane;
+        planeChange = 0;
+      }
+      
+      if (nextPOI != null) {
+        if (add(nextPlane, -exitPlane - planeChange, 4) == 1) planeChange++;
+        println(planeChange + " " + exitPlane);
+        
+        for (int j = 0; j < abs(planeChange); j++) {
+          if (planeChange > 0) addCorners.add(allCorners[add(exitPlane, j, 4)]);
+          else addCorners.add(allCorners[add(exitPlane, -j - 1, 4)]);
+        }
+        exitPlane = 0;
+        planeChange = 0;
+      } else {
+        int currentPlane = add(exitPlane, planeChange, 4);
+        float[] nextAngle = projAngle(verts.get(add(i, 1, verts.size())));
+        int nextBoundLR = nextAngle[0] < -maxLR ? -1 : (nextAngle[0] > maxLR ? 1 : 0);
+        int nextBoundUD = nextAngle[1] < -maxUD ? -1 : (nextAngle[1] > maxUD ? 1 : 0);
+
+        if (boundLR == 0 || boundUD == 0) {   
+          switch (currentPlane) {
+            case 0:
+              if (nextBoundLR == 1 && nextBoundUD != -1) planeChange++;
+              if (nextBoundLR == -1) planeChange -= nextBoundUD == 1 ? 2 : 1;
+              break;
+            case 1:
+              if (nextBoundUD == 1 && (nextBoundLR != 1)) planeChange++;
+              if (nextBoundUD == -1) planeChange -= nextBoundLR == -1 ? 2 : 1;
+              break;
+            case 2:
+              if (nextBoundLR == -1 && nextBoundUD != 1) planeChange++;
+              if (nextBoundLR == 1) planeChange -= nextBoundUD == -1 ? 2 : 1;
+              break;
+            case 3:
+              if (nextBoundUD == -1 && nextBoundLR != -1) planeChange++;
+              if (nextBoundUD == 1) planeChange -= nextBoundLR == 1 ? 2 : 1;
+              break;
+          }
+          
+        } else {
+          switch (currentPlane) {
+            case 0:
+              if (nextBoundLR == 1 && nextBoundUD != -1) planeChange++;
+              else if (nextBoundLR == -1 && nextBoundUD != 1) planeChange--;
+              else if (nextBoundLR == 0 && nextBoundUD == 1) planeChange += 2;
+              else if (nextBoundLR == -1 && nextBoundUD == 1) {
+                if (projAngle(segmentPlanePOI(boundPlaneNormals[currentPlane], verts.get(i), nextVec, 0, 0))[0] > 0) planeChange += 2;
+                else planeChange -= 2;
+              }
+              break;
+            case 1:
+              if (nextBoundUD == 1 && nextBoundLR != 1) planeChange++;
+              else if (nextBoundUD == -1 && nextBoundLR != -1) planeChange--;
+              else if (nextBoundUD == 0 && nextBoundLR == -1) planeChange += 2;
+              else if (nextBoundUD == -1 && nextBoundLR == -1) {
+                if (projAngle(segmentPlanePOI(boundPlaneNormals[currentPlane], verts.get(i), nextVec, 0, 0))[1] < 0) planeChange += 2;
+                else planeChange -= 2;
+              }
+              break;
+            case 2:
+              if (nextBoundLR == -1 && nextBoundUD != 1) planeChange++;
+              else if (nextBoundLR == 1 && nextBoundUD != -1) planeChange--;
+              else if (nextBoundLR == 0 && nextBoundUD == -1) planeChange += 2;
+              else if (nextBoundLR == 1 && nextBoundUD == -1) {
+                if (projAngle(segmentPlanePOI(boundPlaneNormals[currentPlane], verts.get(i), nextVec, 0, 0))[0] < 0) planeChange += 2;
+                else planeChange -= 2;
+              }
+              break;
+            case 3:
+              if (nextBoundUD == -1 && nextBoundLR != -1) planeChange++;
+              else if (nextBoundUD == 1 && nextBoundLR != 1) planeChange--;
+              else if (nextBoundUD == 0 && nextBoundLR == 1) planeChange += 2;
+              else if (nextBoundUD == 1 && nextBoundLR == 1) {
+                if (projAngle(segmentPlanePOI(boundPlaneNormals[currentPlane], verts.get(i), nextVec, 0, 0))[1] > 0) planeChange += 2;
+                else planeChange -= 2;
+              }
+              break;
+          }
+        }
       }
       
       float[][] ang = {projAngle(verts.get(i)), prevPOI == null ? null : projAngle(prevPOI), nextPOI == null ? null : projAngle(nextPOI)};
@@ -274,9 +400,14 @@ Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices t
         verts.add(i, prevPOI);
       }
       if (nextPOI != null) {
+        for (PVector c : addCorners) {
+          i++;
+          verts.add(i, PVector.add(c, location));
+        }
         i++;
         verts.add(i, nextPOI);
       }
+      nextNull = nextPOI == null;
     }
   }
   
@@ -301,15 +432,15 @@ Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices t
   return null;
 }
 
-PVector viewDirection(float[] pixel) {
-  PVector vLR = viewLRVec.normalize(null);
+PVector viewDirection(float ... pixel) { //Something wrong here?
+  PVector vLR = viewLRVec.normalize(null).mult(-1);
   PVector vUD = viewUDVec.normalize(null);
   
   float angleLR = radians(ANGLE_WIDTH)*(pixel[0]/width - 0.5);
   float angleUD = radians(ANGLE_HEIGHT)*(pixel[1]/height - 0.5);
   
-  PVector p = vUD.cross(rotateVector(viewVecUnit, vUD, angleLR)).cross(vLR.cross(rotateVector(viewVecUnit, vLR, angleUD))).normalize();
-  p.x = -p.x;
+  PVector p = vUD.cross(rotateVector(viewVecUnit, vUD, -angleLR)).cross(vLR.cross(rotateVector(viewVecUnit, vLR, angleUD))).normalize();
+  //p.x = -p.x;
   return p;
 }
 
@@ -332,7 +463,7 @@ void vision() {
     float[][] vertexPixels = new float[8][2];
 
     for (int i = 0; i < sol[j].numVertices; i++) {
-      vertexPixels[i] = projectedPixel(vertices[i], vertices[(int)add(i, -1, sol[j].numVertices)]);
+      vertexPixels[i] = projectedPixel(vertices[i], vertices[add(i, -1, sol[j].numVertices)]);
     }
 
     for (int i = 0; i < sol[j].numFaces; i++) {
