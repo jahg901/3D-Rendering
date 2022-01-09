@@ -3,6 +3,8 @@
 final int NUM_SOLIDS = 1;
 final float ANGLE_WIDTH = 60;
 final float ANGLE_HEIGHT = 60;
+final float maxLR = radians(ANGLE_WIDTH / 2 + 1);
+final float maxUD = radians(ANGLE_HEIGHT / 2 + 1);
 
 float viewWidth, viewHeight;
 float angleFlat, angleIncline, angleRotate, angleRot, angleAdjusted;
@@ -189,7 +191,7 @@ PVector segmentPlanePOI(PVector planeNormal, PVector startPoint, PVector directi
   return POI;
 }
 
-Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices to corners of the range when needed
+Shape projection(PVector[] vertices3D) { //figure out case where object takes up full screen
   PVector[] allCorners = { viewDirection(width+width/ANGLE_WIDTH, -height/ANGLE_HEIGHT).mult(100), viewDirection(width+width/ANGLE_WIDTH, height+height/ANGLE_HEIGHT).mult(100), viewDirection(-width/ANGLE_WIDTH, height+height/ANGLE_HEIGHT).mult(100), viewDirection(-width/ANGLE_WIDTH, -height/ANGLE_HEIGHT).mult(100) }; //figure out where the corners are; corners[i] stores corner between plane i and plane i+1
 
   float[][] cornerAngles = new float[4][2];
@@ -204,49 +206,46 @@ Shape projection(PVector[] vertices3D) { //use exitPlaneNormal to add vertices t
   
   LinkedList<PVector> addCorners = new LinkedList<PVector>();
   
-  LinkedList<PVector> verts = new LinkedList<PVector>();
   PVector vUD = viewUDVec.normalize(null);
-  PVector vLR = viewLRVec.normalize(null).mult(-1);
-  
-  float maxLR = radians(ANGLE_WIDTH / 2 + 1);
-  float maxUD = radians(ANGLE_HEIGHT / 2 + 1);
+  PVector vLR = viewLRVec.normalize(null).mult(-1);  
   
   // { top, right, bottom, left }
-  PVector[] boundPlaneNormals = { vLR.cross(rotateVector(viewVecUnit, vLR, maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, -maxLR)), vLR.cross(rotateVector(viewVecUnit, vLR, -maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, maxLR)) };
+  PVector[] boundPlaneNormals = { vLR.cross(rotateVector(viewVecUnit, vLR, -maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, -maxLR)), vLR.cross(rotateVector(viewVecUnit, vLR, maxUD)), vUD.cross(rotateVector(viewVecUnit, vUD, maxLR)) };
   
   int exitPlane = 0; //0 is top, 1 is right, 2 is bottom, 3 is left, n is n % 4
   int planeChange = 0;
   boolean nextNull = false;
   
-  for (PVector vertex : vertices3D) verts.add(vertex);
-  
   int k = -1;
   float[] angle;
   do {
     k++;
-    angle = projAngle(verts.get(k));
-  } while (abs(angle[0]) <= maxLR && abs(angle[1]) <= maxUD && k < verts.size());
-  if (k == verts.size()) {
+    angle = k == vertices3D.length ? new float[] { 0, 0 } : projAngle(vertices3D[k]);
+  } while ((abs(angle[0]) > maxLR || abs(angle[1]) > maxUD) && k < vertices3D.length);
+  if (k == vertices3D.length) {
     k = 0;
     boolean intersectionFound = false;
     do {
-      PVector prevVec =  PVector.sub(verts.get(add(k, -1, verts.size())), verts.get(k));
+      PVector prevVec =  PVector.sub(vertices3D[add(k, -1, vertices3D.length)], vertices3D[k]);
       for (int i = 0; i < 4; i++) {
         int angleIndex = i % 2;
-        if (segmentPlanePOI(boundPlaneNormals[i], verts.get(k), prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex) != null) intersectionFound = true;
+        if (segmentPlanePOI(boundPlaneNormals[i], vertices3D[k], prevVec, angleIndex == 0 ? maxLR : maxUD, angleIndex) != null) intersectionFound = true;
       }
-      k++;
-    } while (!intersectionFound && k < verts.size());
-    if (k == verts.size()) return null; 
-    k--;
+      if (!intersectionFound) k++;
+    } while (!intersectionFound && k < vertices3D.length);
+    if (k == vertices3D.length) return null; 
   }
   
-  for (int index = 0; index < verts.size(); index++) { //issue with catching corners at the end of loop
-    int i = add(index, k, verts.size());
+  println("Offset: " + k);
+
+  LinkedList<PVector> verts = new LinkedList<PVector>(); 
+  for (int i = 0; i < vertices3D.length; i++) verts.add(vertices3D[add(i, k, vertices3D.length)]);
+  
+  for (int i = 0; i < verts.size(); i++) { //issue with catching corners at the end of loop
     angle = projAngle(verts.get(i));
   
     int boundLR = angle[0] < -maxLR ? -1 : (angle[0] > maxLR ? 1 : 0);
-    int boundUD = angle[1] < -maxUD ? -1 : (angle[1] > maxUD ? 1 : 0);
+    int boundUD = angle[1] < -maxUD ? 1 : (angle[1] > maxUD ? -1 : 0);
     
     if (boundLR == 0 && boundUD == 0) {
       planeChange = 0;
